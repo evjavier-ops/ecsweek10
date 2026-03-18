@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime
+from uuid import uuid4
 
 import requests
 import streamlit as st
@@ -29,15 +30,23 @@ if not hf_token or not str(hf_token).strip():
     )
     st.stop()
 
-# Initialize chat history and sidebar state
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {"role": "system", "content": "You are a helpful assistant."}
-    ]
+
+def create_chat(title: str = "New Chat") -> dict:
+    return {
+        "id": str(uuid4()),
+        "title": title,
+        "messages": [{"role": "system", "content": "You are a helpful assistant."}],
+        "timestamp": datetime.now().strftime("%b %d"),
+    }
+
+
+# Initialize chat state
 if "chats" not in st.session_state:
-    st.session_state.chats = []
-if "current_title" not in st.session_state:
-    st.session_state.current_title = "New Chat"
+    st.session_state.chats = [create_chat()]
+if "active_chat_id" not in st.session_state:
+    st.session_state.active_chat_id = st.session_state.chats[0]["id"]
+
+# Initialize memory state
 if "memory" not in st.session_state:
     st.session_state.memory = {
         "hiking": "true",
@@ -68,27 +77,15 @@ def save_memory_to_file() -> None:
         pass
 
 
-def start_new_chat() -> None:
-    if len(st.session_state.messages) > 1:
-        st.session_state.chats.append(
-            {
-                "title": st.session_state.current_title,
-                "messages": st.session_state.messages,
-                "timestamp": datetime.now().strftime("%b %d"),
-            }
-        )
-    st.session_state.current_title = "New Chat"
-    st.session_state.messages = [
-        {"role": "system", "content": "You are a helpful assistant."}
-    ]
-
-
 load_memory_from_file()
 
+# Sidebar UI
 with st.sidebar:
     st.header("Chats")
     if st.button("New Chat", use_container_width=True):
-        start_new_chat()
+        new_chat = create_chat()
+        st.session_state.chats.append(new_chat)
+        st.session_state.active_chat_id = new_chat["id"]
 
     with st.expander("User Memory", expanded=True):
         if st.button("Clear Memory", use_container_width=True):
@@ -98,17 +95,45 @@ with st.sidebar:
 
     st.divider()
     st.caption("Recent Chats")
+
+    delete_id = None
     if not st.session_state.chats:
-        st.caption("No recent chats yet.")
+        st.caption("No chats yet.")
     else:
-        for i, chat in enumerate(reversed(st.session_state.chats), start=1):
-            label = f"{chat['title']} — {chat['timestamp']}"
-            if st.button(label, key=f"chat_{i}", use_container_width=True):
-                st.session_state.current_title = chat["title"]
-                st.session_state.messages = chat["messages"]
+        for chat in st.session_state.chats:
+            is_active = chat["id"] == st.session_state.active_chat_id
+            label_prefix = "▶ " if is_active else ""
+            label = f"{label_prefix}{chat['title']} — {chat['timestamp']}"
+            col1, col2 = st.columns([0.85, 0.15])
+            with col1:
+                if st.button(label, key=f"select_{chat['id']}", use_container_width=True):
+                    st.session_state.active_chat_id = chat["id"]
+            with col2:
+                if st.button("✕", key=f"delete_{chat['id']}"):
+                    delete_id = chat["id"]
+
+    if delete_id is not None:
+        st.session_state.chats = [c for c in st.session_state.chats if c["id"] != delete_id]
+        if st.session_state.active_chat_id == delete_id:
+            st.session_state.active_chat_id = (
+                st.session_state.chats[0]["id"] if st.session_state.chats else None
+            )
+        st.rerun()
+
+
+# Active chat lookup
+active_chat = None
+for chat in st.session_state.chats:
+    if chat["id"] == st.session_state.active_chat_id:
+        active_chat = chat
+        break
+
+if active_chat is None:
+    st.info("No active chat. Create a new chat to begin.")
+    st.stop()
 
 # Render chat history (skip system in UI)
-for msg in st.session_state.messages:
+for msg in active_chat["messages"]:
     if msg["role"] == "system":
         continue
     with st.chat_message(msg["role"]):
@@ -119,15 +144,15 @@ user_input = st.chat_input("Type a message and press Enter")
 
 if user_input:
     user_message = {"role": "user", "content": user_input.strip()}
-    if st.session_state.current_title == "New Chat":
-        st.session_state.current_title = user_message["content"][:32] or "New Chat"
-    st.session_state.messages.append(user_message)
+    if active_chat["title"] == "New Chat":
+        active_chat["title"] = user_message["content"][:32] or "New Chat"
+    active_chat["messages"].append(user_message)
     with st.chat_message("user"):
         st.write(user_message["content"])
 
     payload = {
         "model": HF_MODEL,
-        "messages": st.session_state.messages,
+        "messages": active_chat["messages"],
         "temperature": 0.7,
         "max_tokens": 256,
     }
@@ -143,7 +168,7 @@ if user_input:
                 data = resp.json()
                 assistant_text = data["choices"][0]["message"]["content"]
                 assistant_message = {"role": "assistant", "content": assistant_text}
-                st.session_state.messages.append(assistant_message)
+                active_chat["messages"].append(assistant_message)
                 with st.chat_message("assistant"):
                     st.write(assistant_text)
             elif resp.status_code == 401:
