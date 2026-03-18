@@ -8,6 +8,7 @@ import streamlit as st
 
 HF_ENDPOINT = "https://router.huggingface.co/v1/chat/completions"
 HF_MODEL = "meta-llama/Llama-3.2-1B-Instruct"
+CHATS_DIR = "chats"
 
 st.set_page_config(page_title="My AI Chat", layout="wide")
 
@@ -31,6 +32,9 @@ if not hf_token or not str(hf_token).strip():
     st.stop()
 
 
+os.makedirs(CHATS_DIR, exist_ok=True)
+
+
 def create_chat(title: str = "New Chat") -> dict:
     return {
         "id": str(uuid4()),
@@ -40,9 +44,48 @@ def create_chat(title: str = "New Chat") -> dict:
     }
 
 
+def chat_file_path(chat_id: str) -> str:
+    return os.path.join(CHATS_DIR, f"{chat_id}.json")
+
+
+def save_chat_to_file(chat: dict) -> None:
+    try:
+        with open(chat_file_path(chat["id"]), "w", encoding="utf-8") as f:
+            json.dump(chat, f, indent=2)
+    except OSError:
+        pass
+
+
+def delete_chat_file(chat_id: str) -> None:
+    try:
+        os.remove(chat_file_path(chat_id))
+    except OSError:
+        pass
+
+
+def load_chats_from_disk() -> list[dict]:
+    chats = []
+    for name in os.listdir(CHATS_DIR):
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(CHATS_DIR, name)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and {"id", "title", "messages"}.issubset(data.keys()):
+                chats.append(data)
+        except (OSError, json.JSONDecodeError):
+            continue
+    return chats
+
+
 # Initialize chat state
 if "chats" not in st.session_state:
-    st.session_state.chats = [create_chat()]
+    st.session_state.chats = load_chats_from_disk()
+    if not st.session_state.chats:
+        new_chat = create_chat()
+        st.session_state.chats = [new_chat]
+        save_chat_to_file(new_chat)
 if "active_chat_id" not in st.session_state:
     st.session_state.active_chat_id = st.session_state.chats[0]["id"]
 
@@ -86,6 +129,7 @@ with st.sidebar:
         new_chat = create_chat()
         st.session_state.chats.append(new_chat)
         st.session_state.active_chat_id = new_chat["id"]
+        save_chat_to_file(new_chat)
 
     with st.expander("User Memory", expanded=True):
         if st.button("Clear Memory", use_container_width=True):
@@ -114,6 +158,7 @@ with st.sidebar:
 
     if delete_id is not None:
         st.session_state.chats = [c for c in st.session_state.chats if c["id"] != delete_id]
+        delete_chat_file(delete_id)
         if st.session_state.active_chat_id == delete_id:
             st.session_state.active_chat_id = (
                 st.session_state.chats[0]["id"] if st.session_state.chats else None
@@ -147,6 +192,7 @@ if user_input:
     if active_chat["title"] == "New Chat":
         active_chat["title"] = user_message["content"][:32] or "New Chat"
     active_chat["messages"].append(user_message)
+    save_chat_to_file(active_chat)
     with st.chat_message("user"):
         st.write(user_message["content"])
 
@@ -169,6 +215,7 @@ if user_input:
                 assistant_text = data["choices"][0]["message"]["content"]
                 assistant_message = {"role": "assistant", "content": assistant_text}
                 active_chat["messages"].append(assistant_message)
+                save_chat_to_file(active_chat)
                 with st.chat_message("assistant"):
                     st.write(assistant_text)
             elif resp.status_code == 401:
