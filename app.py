@@ -34,6 +34,44 @@ if not hf_token or not str(hf_token).strip():
 
 os.makedirs(CHATS_DIR, exist_ok=True)
 
+# One-time Part A test message
+if "test_response" not in st.session_state:
+    st.session_state.test_response = None
+if "test_error" not in st.session_state:
+    st.session_state.test_error = None
+
+
+def run_test_message() -> None:
+    payload = {
+        "model": HF_MODEL,
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Hello!"},
+        ],
+        "temperature": 0.7,
+        "max_tokens": 128,
+    }
+    headers = {
+        "Authorization": f"Bearer {hf_token}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(HF_ENDPOINT, json=payload, headers=headers, timeout=60)
+        if resp.status_code == 200:
+            data = resp.json()
+            st.session_state.test_response = data["choices"][0]["message"]["content"]
+            st.session_state.test_error = None
+        elif resp.status_code == 401:
+            st.session_state.test_error = "Unauthorized. Check that your HF token is valid and has access."
+        elif resp.status_code == 429:
+            st.session_state.test_error = "Rate limit reached. Please wait a bit and try again."
+        else:
+            st.session_state.test_error = f"Request failed with status {resp.status_code}."
+    except requests.exceptions.Timeout:
+        st.session_state.test_error = "The request timed out. Please try again."
+    except requests.exceptions.RequestException as e:
+        st.session_state.test_error = f"Network error while contacting the API: {e}"
+
 
 def create_chat(title: str = "New Chat") -> dict:
     return {
@@ -161,6 +199,17 @@ def extract_memory_from_message(user_text: str) -> None:
 
 
 load_memory_from_file()
+
+# Run single test message once per session (Part A restore)
+if st.session_state.test_response is None and st.session_state.test_error is None:
+    run_test_message()
+
+st.subheader("Test Message")
+st.write("User: Hello!")
+if st.session_state.test_error:
+    st.error(st.session_state.test_error)
+elif st.session_state.test_response:
+    st.write(st.session_state.test_response)
 
 # Sidebar UI
 with st.sidebar:
