@@ -204,13 +204,6 @@ load_memory_from_file()
 if st.session_state.test_response is None and st.session_state.test_error is None:
     run_test_message()
 
-st.subheader("Test Message")
-st.write("User: Hello!")
-if st.session_state.test_error:
-    st.error(st.session_state.test_error)
-elif st.session_state.test_response:
-    st.write(st.session_state.test_response)
-
 # Sidebar UI
 with st.sidebar:
     st.header("Chats")
