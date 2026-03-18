@@ -2,6 +2,7 @@ import json
 import os
 from datetime import datetime
 from uuid import uuid4
+import time
 
 import requests
 import streamlit as st
@@ -201,6 +202,7 @@ if user_input:
         "messages": active_chat["messages"],
         "temperature": 0.7,
         "max_tokens": 256,
+        "stream": True,
     }
     headers = {
         "Authorization": f"Bearer {hf_token}",
@@ -209,15 +211,33 @@ if user_input:
 
     with st.spinner("Contacting Hugging Face Inference Router..."):
         try:
-            resp = requests.post(HF_ENDPOINT, json=payload, headers=headers, timeout=60)
+            resp = requests.post(
+                HF_ENDPOINT, json=payload, headers=headers, timeout=60, stream=True
+            )
             if resp.status_code == 200:
-                data = resp.json()
-                assistant_text = data["choices"][0]["message"]["content"]
-                assistant_message = {"role": "assistant", "content": assistant_text}
+                with st.chat_message("assistant"):
+                    placeholder = st.empty()
+                    full_text = ""
+                    for line in resp.iter_lines(decode_unicode=True):
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data_str = line.replace("data:", "", 1).strip()
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            data = json.loads(data_str)
+                            delta = data["choices"][0].get("delta", {})
+                            chunk = delta.get("content", "")
+                        except (KeyError, json.JSONDecodeError, IndexError, TypeError):
+                            chunk = ""
+                        if chunk:
+                            full_text += chunk
+                            placeholder.write(full_text)
+                            time.sleep(0.02)
+
+                assistant_message = {"role": "assistant", "content": full_text}
                 active_chat["messages"].append(assistant_message)
                 save_chat_to_file(active_chat)
-                with st.chat_message("assistant"):
-                    st.write(assistant_text)
             elif resp.status_code == 401:
                 st.error("Unauthorized. Check that your HF token is valid and has access.")
             elif resp.status_code == 429:
