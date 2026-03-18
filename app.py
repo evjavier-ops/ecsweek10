@@ -1,8 +1,8 @@
 import json
 import os
+import time
 from datetime import datetime
 from uuid import uuid4
-import time
 
 import requests
 import streamlit as st
@@ -32,7 +32,6 @@ if not hf_token or not str(hf_token).strip():
     )
     st.stop()
 
-
 os.makedirs(CHATS_DIR, exist_ok=True)
 
 
@@ -40,7 +39,7 @@ def create_chat(title: str = "New Chat") -> dict:
     return {
         "id": str(uuid4()),
         "title": title,
-        "messages": [{"role": "system", "content": "You are a helpful assistant."}],
+        "messages": [],
         "timestamp": datetime.now().strftime("%b %d"),
     }
 
@@ -74,6 +73,9 @@ def load_chats_from_disk() -> list[dict]:
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict) and {"id", "title", "messages"}.issubset(data.keys()):
+                data["messages"] = [
+                    m for m in data.get("messages", []) if m.get("role") != "system"
+                ]
                 chats.append(data)
         except (OSError, json.JSONDecodeError):
             continue
@@ -92,14 +94,7 @@ if "active_chat_id" not in st.session_state:
 
 # Initialize memory state
 if "memory" not in st.session_state:
-    st.session_state.memory = {
-        "hiking": "true",
-        "name": "User",
-        "preferred_language": "English",
-        "interests": ["outdoors", "history", "food"],
-        "communication_style": "informative",
-        "favorite_topics": ["California history", "food", "plants"],
-    }
+    st.session_state.memory = {}
 
 
 def load_memory_from_file() -> None:
@@ -118,6 +113,50 @@ def save_memory_to_file() -> None:
         with open("memory.json", "w", encoding="utf-8") as f:
             json.dump(st.session_state.memory, f, indent=2)
     except OSError:
+        pass
+
+
+def merge_memory(new_data: dict) -> None:
+    if not isinstance(new_data, dict):
+        return
+    for key, value in new_data.items():
+        if value in (None, "", [], {}):
+            continue
+        st.session_state.memory[key] = value
+    save_memory_to_file()
+
+
+def extract_memory_from_message(user_text: str) -> None:
+    if not user_text.strip():
+        return
+    prompt = (
+        "Given this user message, extract any personal facts or preferences as a JSON object. "
+        "If none, return {}. Only return valid JSON with no extra text."
+    )
+    payload = {
+        "model": HF_MODEL,
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user_text},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 128,
+    }
+    headers = {
+        "Authorization": f"Bearer {hf_token}",
+        "Content-Type": "application/json",
+    }
+    try:
+        resp = requests.post(HF_ENDPOINT, json=payload, headers=headers, timeout=30)
+        if resp.status_code == 200:
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
+            try:
+                extracted = json.loads(content)
+                merge_memory(extracted)
+            except json.JSONDecodeError:
+                pass
+    except requests.exceptions.RequestException:
         pass
 
 
@@ -178,10 +217,8 @@ if active_chat is None:
     st.info("No active chat. Create a new chat to begin.")
     st.stop()
 
-# Render chat history (skip system in UI)
+# Render chat history
 for msg in active_chat["messages"]:
-    if msg["role"] == "system":
-        continue
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
@@ -197,9 +234,16 @@ if user_input:
     with st.chat_message("user"):
         st.write(user_message["content"])
 
+    memory_text = json.dumps(st.session_state.memory, ensure_ascii=True, indent=2)
+    system_prompt = (
+        "You are a helpful assistant. Use the user memory below to personalize replies. "
+        "If memory is empty, respond normally.\n\nUser Memory:\n"
+        f"{memory_text}"
+    )
+
     payload = {
         "model": HF_MODEL,
-        "messages": active_chat["messages"],
+        "messages": [{"role": "system", "content": system_prompt}, *active_chat["messages"]],
         "temperature": 0.7,
         "max_tokens": 256,
         "stream": True,
@@ -238,6 +282,7 @@ if user_input:
                 assistant_message = {"role": "assistant", "content": full_text}
                 active_chat["messages"].append(assistant_message)
                 save_chat_to_file(active_chat)
+                extract_memory_from_message(user_message["content"])
             elif resp.status_code == 401:
                 st.error("Unauthorized. Check that your HF token is valid and has access.")
             elif resp.status_code == 429:
