@@ -204,7 +204,7 @@ load_memory_from_file()
 if st.session_state.test_response is None and st.session_state.test_error is None:
     run_test_message()
 
-with st.expander("Test Message (Part A)", expanded=False):
+with st.expander("Test Message", expanded=False):
     st.write("User: Hello!")
     if st.session_state.test_error:
         st.error(st.session_state.test_error)
